@@ -1,0 +1,15 @@
+{
+  "target": "https://shop.acme-test.example",
+  "scanner": "VibeScanner",
+  "findings": [
+    {"id": "F-001", "type": "SQL Injection", "url": "https://shop.acme-test.example/product?sku=42",
+     "parameter": "sku", "method": "GET", "payload": "42' OR '1'='1",
+     "evidence": "Response length jumped from 2104 to 18877 bytes; MySQL syntax error returned in the body."},
+    {"id": "F-004", "type": "Insecure Direct Object Reference", "url": "https://shop.acme-test.example/order",
+     "parameter": "order_id", "method": "GET", "payload": "order_id=5591",
+     "evidence": "Logged in as user 41; fetched order 5591 belonging to user 77. No ownership check performed."},
+    {"id": "F-007", "type": "Reflected XSS", "url": "https://shop.acme-test.example/find",
+     "parameter": "term", "method": "GET", "payload": "<svg onload=alert(1)>",
+     "evidence": "Payload echoed back unencoded inside the HTML body of the response."}
+  ]
+}

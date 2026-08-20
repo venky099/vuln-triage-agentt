@@ -19,7 +19,7 @@ from typing import Any, Callable
 from .grounding import enforce
 from .llm import SYSTEM_PROMPT, Backend, get_backend
 from .models import TRIAGE_SCHEMA, RawFinding, TriagedFinding
-from .tools import build_vector, dedupe, lookup_cwe, score_cvss, severity_of
+from .tools import build_vector, cwe_catalogue, dedupe, lookup_cwe, score_cvss
 
 
 class SchemaError(ValueError):
@@ -84,7 +84,7 @@ def _context(raw: RawFinding) -> str:
         "payload": raw.payload,
         "evidence": raw.evidence,
         "extra": raw.raw,
-        "allowed_cwe_ids": sorted(__import__("triage.tools", fromlist=["x"]).cwe_catalogue().keys()),
+        "allowed_cwe_ids": sorted(cwe_catalogue().keys()),
         "schema": TRIAGE_SCHEMA,
     }, indent=2)
 
@@ -102,6 +102,27 @@ def _adds_information(catalogue: str, model_text: str, threshold: float = 0.4) -
     if not cat:
         return False
     return len(cat - mod) / len(cat) >= threshold
+
+
+
+def finalise_grounded(raw: RawFinding, triaged: TriagedFinding,
+                      redact: bool = True) -> TriagedFinding:
+    """Turn a raw triage entry into the version that ships.
+
+    Runs the grounding checks, then leads with the CWE catalogue's remediation
+    where it adds something the model did not say.
+
+    This exists as a standalone function because two callers need it: the agent
+    (grounding=True) and the web UI, which runs the model once with grounding
+    off and applies this to a copy so it can show both views. Before it was
+    shared, the same finding produced different remediation text depending on
+    which entry point you came in through.
+    """
+    triaged = enforce(raw, triaged, redact=redact)
+    entry = lookup_cwe(triaged.cwe_id) if triaged.cwe_id else None
+    if entry and _adds_information(entry["remediation"], triaged.remediation):
+        triaged.remediation = "{} {}".format(entry["remediation"], triaged.remediation).strip()
+    return triaged
 
 
 @dataclass
@@ -180,13 +201,7 @@ class TriageAgent:
         triaged._retries = retries  # type: ignore[attr-defined]
 
         if self.grounding:
-            triaged = enforce(raw, triaged, redact=self.redact)
-            # The catalogue remediation is a source of truth, so lead with it --
-            # but only when it actually says something the model did not. The two
-            # often agree almost word for word, and concatenating them then reads
-            # as a stutter in the finished report.
-            if entry and triaged.cwe_id and _adds_information(entry["remediation"], triaged.remediation):
-                triaged.remediation = "{} {}".format(entry["remediation"], triaged.remediation).strip()
+            triaged = finalise_grounded(raw, triaged, redact=self.redact)
         else:
             triaged.flags = []
         return triaged

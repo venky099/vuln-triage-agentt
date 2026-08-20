@@ -111,9 +111,15 @@ def to_html(result: TriageResult, target: str = "") -> str:
             "<p>{summary}</p>"
             "<h4>Reproduction</h4><p>{repro}</p>"
             "<h4>Remediation</h4><p>{fix}</p>{flags}</article>".format(
-                c=BADGE.get(f.severity, "#6b7280"), sev=f.severity, score=f.cvss_score, i=i,
+                # BADGE.get() constrains the colour to a known palette value, but
+                # every *interpolated* field is escaped: /api/render accepts a
+                # client-supplied result, so severity, score and cwe_id are all
+                # attacker-controlled in that path.
+                c=BADGE.get(f.severity, "#6b7280"),
+                sev=html.escape(str(f.severity)), score=html.escape(str(f.cvss_score)), i=i,
                 title=html.escape(f.title), vec=html.escape(f.cvss_vector),
-                cwe=" &middot; {} {}".format(f.cwe_id, html.escape(f.cwe_name)) if f.cwe_id else "",
+                cwe=" &middot; {} {}".format(html.escape(str(f.cwe_id)), html.escape(f.cwe_name))
+                    if f.cwe_id else "",
                 src=html.escape(f.source_id), summary=html.escape(f.summary),
                 repro=html.escape(f.reproduction), fix=html.escape(f.remediation), flags=flags))
 

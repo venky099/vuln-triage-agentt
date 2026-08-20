@@ -24,6 +24,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import urllib.error
 import urllib.request
 
 SYSTEM_PROMPT = """You are a penetration testing report writer.
@@ -158,9 +159,14 @@ class MockBackend(Backend):
 class OpenAIBackend(Backend):
     name = "openai"
 
-    def __init__(self, model: str | None = None) -> None:
+    def __init__(self, model: str | None = None, api_key: str | None = None) -> None:
+        """`api_key` lets a caller supply a key per request.
+
+        The web UI uses this so a visitor can spend their own credits without
+        the key ever reaching the environment, a log, or disk.
+        """
         from openai import OpenAI
-        self.client = OpenAI()
+        self.client = OpenAI(api_key=api_key) if api_key else OpenAI()
         self.model = model or os.environ.get("LLM_MODEL", "gpt-4o-mini")
 
     def complete_json(self, system: str, user: str) -> str:
@@ -190,9 +196,41 @@ class OllamaBackend(Backend):
         }).encode()
         req = urllib.request.Request(self.host + "/api/chat", data=payload,
                                      headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=180) as resp:
-            body = json.loads(resp.read())
+        try:
+            with urllib.request.urlopen(req, timeout=300) as resp:
+                body = json.loads(resp.read())
+        except urllib.error.HTTPError as exc:
+            # Ollama answers 404 for a model it does not have pulled. Left raw,
+            # that surfaces as a bare stack trace with no hint of the cause.
+            if exc.code == 404:
+                raise RuntimeError(
+                    "Ollama has no model named {0!r}. Pull it first with "
+                    "`ollama pull {0}`, or pick another with LLM_MODEL=<name> "
+                    "(see `ollama list`).".format(self.model)
+                ) from None
+            raise RuntimeError("Ollama returned HTTP {}.".format(exc.code)) from None
+        except urllib.error.URLError as exc:
+            raise RuntimeError(
+                "Could not reach Ollama at {}. Is `ollama serve` running? ({})"
+                .format(self.host, exc.reason)
+            ) from None
         return (body.get("message", {}).get("content") or "").strip()
+
+
+def ollama_models(host: str | None = None) -> list[str]:
+    """Names of models this Ollama actually has pulled.
+
+    Returned so callers can offer a choice and reject anything not on the list:
+    Ollama answers 404 for an unknown name, which is a poor thing to discover
+    part-way through a run.
+    """
+    host = (host or os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")).rstrip("/")
+    try:
+        with urllib.request.urlopen(host + "/api/tags", timeout=2) as resp:
+            data = json.loads(resp.read())
+    except Exception:
+        return []
+    return sorted(m.get("name", "") for m in data.get("models", []) if m.get("name"))
 
 
 def _ollama_alive() -> bool:
@@ -206,10 +244,10 @@ def _ollama_alive() -> bool:
         return False
 
 
-def get_backend(name: str | None = None) -> Backend:
+def get_backend(name: str | None = None, api_key: str | None = None) -> Backend:
     choice = (name or os.environ.get("LLM_BACKEND", "")).lower().strip()
     if choice == "openai":
-        return OpenAIBackend()
+        return OpenAIBackend(api_key=api_key)
     if choice == "ollama":
         return OllamaBackend()
     if choice == "mock":

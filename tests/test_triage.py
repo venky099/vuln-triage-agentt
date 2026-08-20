@@ -206,6 +206,30 @@ def test_url_from_the_scan_is_allowed():
     assert not any("URL not present" in f for f in check(raw(), t))
 
 
+@pytest.mark.parametrize("repro", [
+    "Request https://target.example/product?id=<payload> and compare.",   # extra query
+    "Request https://target.example/product again.",                      # no query
+    "Request https://target.example/product/ again.",                     # trailing slash
+    "Request https://TARGET.example/product?id=1 again.",                 # host case
+])
+def test_same_endpoint_different_query_is_not_a_fabrication(repro):
+    """Regression, found by running a real model.
+
+    A correct reproduction step appends the parameter under test. Comparing
+    whole URLs flagged that as invented -- 5 of 12 findings in an Ollama run,
+    every one a false positive. Endpoints are compared without the query now.
+    """
+    assert not any("URL not present" in f for f in check(raw(), triaged(reproduction=repro)))
+
+
+@pytest.mark.parametrize("repro", [
+    "Also reachable at https://target.example/secret/backup.zip",   # invented path
+    "See https://evil.example/product?id=1",                        # different host
+])
+def test_invented_endpoint_is_still_caught(repro):
+    assert any("URL not present" in f for f in check(raw(), triaged(reproduction=repro)))
+
+
 def test_unsupported_impact_claim_is_caught():
     t = triaged(summary="This allows remote code execution on the host.")
     assert any("unsupported impact claim" in f for f in check(raw(), t))

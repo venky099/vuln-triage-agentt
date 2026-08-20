@@ -23,7 +23,19 @@ from .tools import VECTOR_RE, lookup_cwe, score_cvss
 # Patterns for the classes of claim a report writer tends to fabricate.
 CVE_RE = re.compile(r"\bCVE-\d{4}-\d{4,7}\b", re.IGNORECASE)
 CWE_RE = re.compile(r"\bCWE-\d{1,4}\b", re.IGNORECASE)
-SCORE_RE = re.compile(r"\b(?:CVSS\s*(?:score)?\s*(?:of|is|:)?\s*)(\d{1,2}(?:\.\d)?)\b", re.IGNORECASE)
+# A vector written into prose. Stripped before looking for a stated score --
+# otherwise "CVSS:3.1/AV:N/..." reads as a score of 3.1 and a perfectly correct
+# report gets flagged for review. Removing the vector first is more robust than
+# trying to exclude it with lookarounds, which backtrack into "3".
+VECTOR_IN_PROSE = re.compile(r"CVSS:3\.\d/(?:[A-Z]{1,2}:[A-Z](?:/|\b))+", re.IGNORECASE)
+
+# A numeric score stated in prose. The model is told never to state one; if it
+# does anyway, it has to agree with the arithmetic.
+SCORE_RE = re.compile(
+    r"\bCVSS\s*(?:v?3(?:\.\d)?\s+)?(?:base\s*)?(?:score)?\s*(?:of|is|:|=)?\s*"
+    r"(\d{1,2}(?:\.\d)?)\b",
+    re.IGNORECASE,
+)
 URL_RE = re.compile(r"https?://[^\s\"'<>)\]]+")
 # Absolute claims a scanner finding cannot support.
 OVERCLAIM_RE = re.compile(
@@ -35,6 +47,17 @@ OVERCLAIM_RE = re.compile(
 
 def _normalise(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "")).lower()
+
+
+def _endpoint(url: str) -> str:
+    """scheme://host/path, lowercased, without query, fragment or trailing slash.
+
+    Two URLs are the same endpoint when they differ only in query string. That
+    is the normal shape of a reproduction step, not evidence of invention.
+    """
+    url = (url or "").strip().lower()
+    url = re.split(r"[?#]", url, 1)[0]
+    return url.rstrip("/")
 
 
 def check(raw: RawFinding, triaged: TriagedFinding) -> list[str]:
@@ -58,7 +81,7 @@ def check(raw: RawFinding, triaged: TriagedFinding) -> list[str]:
 
     # 3. A stated score must match the computed one. The model is told never to
     #    state a score; if it does anyway, it has to agree with the arithmetic.
-    for stated in SCORE_RE.findall(prose):
+    for stated in SCORE_RE.findall(VECTOR_IN_PROSE.sub(" ", prose)):
         try:
             if abs(float(stated) - triaged.cvss_score) > 0.05:
                 flags.append("stated CVSS {} does not match computed {}".format(stated, triaged.cvss_score))
@@ -74,9 +97,19 @@ def check(raw: RawFinding, triaged: TriagedFinding) -> list[str]:
             if abs(computed - triaged.cvss_score) > 0.001:
                 flags.append("score {} does not follow from vector".format(triaged.cvss_score))
 
-    # 5. Any URL cited must be one the scanner actually touched.
+    # 5. Any URL cited must point at an endpoint the scanner actually touched.
+    #
+    #    Compared on scheme+host+path only. A reproduction step legitimately
+    #    appends the parameter under test -- the scan records
+    #    "https://host/report" with parameter "q", and a correct write-up says
+    #    "request https://host/report?q=...". A substring match on the whole URL
+    #    calls that a fabrication, and a checker that cries wolf is a checker
+    #    nobody reads. An invented *path* is still caught.
+    scanned = {_endpoint(u) for u in URL_RE.findall(raw.evidence_corpus())}
+    scanned.add(_endpoint(raw.url))
+    scanned.discard("")
     for url in set(URL_RE.findall(prose)):
-        if url.rstrip(".,);").lower() not in corpus:
+        if _endpoint(url.rstrip(".,);")) not in scanned:
             flags.append("URL not present in scan data: {}".format(url))
 
     # 6. Impact claims a single scanner finding cannot support.

@@ -12,6 +12,7 @@ The findings are synthesised from a fixed seed so the run is reproducible.
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import random
 import sys
@@ -19,7 +20,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from triage.agent import TriageAgent            # noqa: E402
+from triage.agent import TriageAgent, finalise_grounded  # noqa: E402
 from triage.grounding import check              # noqa: E402
 from triage.llm import get_backend              # noqa: E402
 from triage.models import RawFinding            # noqa: E402
@@ -73,11 +74,13 @@ def main() -> int:
     findings = synth(args.count)
     print("backend: {} | findings: {}\n".format(backend.name, len(findings)))
 
-    # Both sides measure the SAME findings, one at a time. Deduplication is
-    # deliberately not used here: it would change the denominator between the
-    # two arms and make the comparison meaningless.
-    off_agent = TriageAgent(backend=backend, grounding=False)
-    on_agent = TriageAgent(backend=backend, grounding=True, redact=True)
+    # ONE generation per finding, evaluated twice.
+    #
+    # Calling the model separately for each arm would compare two different
+    # generations, not the same generation with and without checks -- a real
+    # model is not perfectly reproducible even at temperature 0. It also
+    # doubles the cost and wall time for no benefit.
+    agent = TriageAgent(backend=backend, grounding=False)
 
     affected_before = 0
     before_violations = 0
@@ -86,24 +89,28 @@ def main() -> int:
     flagged = 0
     retries = 0
 
-    for raw in findings:
-        # Arm A: no grounding. Count what would have shipped.
-        unchecked = off_agent.triage_one(raw)
-        flags = check(raw, unchecked)
+    for i, raw in enumerate(findings, 1):
+        generated = agent.triage_one(raw)
+        retries += getattr(generated, "_retries", 0)
+
+        # Arm A: what would have shipped with nothing checking it.
+        flags = check(raw, generated)
         if flags:
             affected_before += 1
         before_violations += len(flags)
         for f in flags:
-            key = f.split(":")[0]
-            by_kind[key] = by_kind.get(key, 0) + 1
+            by_kind[f.split(":")[0]] = by_kind.get(f.split(":")[0], 0) + 1
 
-        # Arm B: grounding on. Re-check the text that would actually be published.
-        published = on_agent.triage_one(raw)
-        retries += getattr(published, "_retries", 0)
+        # Arm B: the same generation, put through the checks.
+        published = finalise_grounded(raw, copy.deepcopy(generated), redact=True)
         if published.flags:
             flagged += 1
         if check(raw, published):
             leaked += 1
+
+        if i % 5 == 0 or i == len(findings):
+            print("  ...{}/{}".format(i, len(findings)), flush=True)
+    print()
 
     pct = 100.0 * affected_before / len(findings)
     print("GROUNDING OFF")

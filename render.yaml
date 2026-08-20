@@ -1,0 +1,17 @@
+# Render blueprint: New > Blueprint > point at this repo.
+#
+# TRIAGE_ALLOW_SERVER_KEY is deliberately absent. A public form wired to a
+# server-side API key is a bill waiting to happen; visitors bring their own.
+services:
+  - type: web
+    name: vuln-triage-agent
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt && pip install -e .
+    startCommand: uvicorn webui.app:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      - key: TRIAGE_RATE
+        value: "15"
