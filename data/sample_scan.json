@@ -1,0 +1,25 @@
+{
+  "target": "https://demo.vulnerable.example",
+  "scanner": "VibeScanner",
+  "scanned_at": "2026-08-10T09:14:00Z",
+  "findings": [
+    {"id": "VS-001", "type": "SQL Injection", "url": "https://demo.vulnerable.example/product?id=1",
+     "parameter": "id", "method": "GET", "payload": "1' OR '1'='1",
+     "evidence": "Response length changed from 1841 to 20933 bytes; MySQL error string 'You have an error in your SQL syntax' present in body."},
+    {"id": "VS-002", "type": "SQL Injection", "url": "https://demo.vulnerable.example/product?id=7",
+     "parameter": "id", "method": "GET", "payload": "7' UNION SELECT NULL--",
+     "evidence": "MySQL error string 'You have an error in your SQL syntax' present in body."},
+    {"id": "VS-003", "type": "Reflected XSS", "url": "https://demo.vulnerable.example/search",
+     "parameter": "q", "method": "GET", "payload": "<svg onload=alert(1)>",
+     "evidence": "Payload reflected unencoded inside the HTML body of the response."},
+    {"id": "VS-004", "type": "Cross-Site Request Forgery", "url": "https://demo.vulnerable.example/account/email",
+     "parameter": "", "method": "POST", "payload": "",
+     "evidence": "State-changing POST accepted with no CSRF token and SameSite unset on the session cookie."},
+    {"id": "VS-005", "type": "Insecure Direct Object Reference", "url": "https://demo.vulnerable.example/invoice",
+     "parameter": "invoice_id", "method": "GET", "payload": "invoice_id=1042",
+     "evidence": "Authenticated as user 88; retrieved invoice 1042 belonging to user 12. No ownership check."},
+    {"id": "VS-006", "type": "Verbose Error Message", "url": "https://demo.vulnerable.example/product",
+     "parameter": "id", "method": "GET", "payload": "id=abc",
+     "evidence": "Stack trace disclosed: framework version, absolute file path /srv/app/handlers/product.py line 88."}
+  ]
+}

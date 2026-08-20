@@ -1,0 +1,93 @@
+{
+  "target": "https://demo.vulnerable.example",
+  "generated": "2026-08-20",
+  "backend": "mock",
+  "counts": {
+    "Critical": 1,
+    "High": 0,
+    "Medium": 4,
+    "Low": 0,
+    "None": 0
+  },
+  "duplicates_removed": 1,
+  "schema_retries": 0,
+  "ungrounded_findings": 2,
+  "findings": [
+    {
+      "source_id": "VS-001",
+      "title": "SQL Injection in id at https://demo.vulnerable.example/product?id=1",
+      "cwe_id": "",
+      "cwe_name": "",
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+      "cvss_score": 9.8,
+      "severity": "Critical",
+      "summary": "The id parameter is concatenated into a SQL query. A crafted value changes the meaning of the query, exposing the database behind https://demo.vulnerable.example/product?id=1.",
+      "reproduction": "Send a GET request to https://demo.vulnerable.example/product?id=1 with id=1' OR '1'='1 and compare the response against a benign value.",
+      "remediation": "Use parameterised queries so id is bound as a value and never parsed as SQL.",
+      "duplicates": [
+        "VS-002"
+      ],
+      "flags": [
+        "CWE not in catalogue: CWE-781"
+      ]
+    },
+    {
+      "source_id": "VS-004",
+      "title": "Cross-Site Request Forgery in the request body at https://demo.vulnerable.example/account/email",
+      "cwe_id": "CWE-352",
+      "cwe_name": "Cross-Site Request Forgery",
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:N/I:H/A:N",
+      "cvss_score": 6.5,
+      "severity": "Medium",
+      "summary": "The endpoint at https://demo.vulnerable.example/account/email performs a state change without verifying the request originated from the application itself.",
+      "reproduction": "Host a page that auto-submits a POST to https://demo.vulnerable.example/account/email, then load it while authenticated; the change is applied.",
+      "remediation": "Require an unpredictable per-session token on state-changing requests and set SameSite on the session cookie.",
+      "duplicates": [],
+      "flags": []
+    },
+    {
+      "source_id": "VS-005",
+      "title": "Insecure Direct Object Reference in invoice_id at https://demo.vulnerable.example/invoice",
+      "cwe_id": "CWE-639",
+      "cwe_name": "Authorization Bypass Through User-Controlled Key",
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N",
+      "cvss_score": 6.5,
+      "severity": "Medium",
+      "summary": "The invoice_id value selects a record without checking that the authenticated user owns it, so any user can read another user data via https://demo.vulnerable.example/invoice.",
+      "reproduction": "Authenticate, then request https://demo.vulnerable.example/invoice with invoice_id set to an identifier belonging to a different user.",
+      "remediation": "Check the authenticated user owns the referenced object on every request (IDOR). Check ownership server-side on every request rather than trusting the identifier supplied by the client.",
+      "duplicates": [],
+      "flags": []
+    },
+    {
+      "source_id": "VS-003",
+      "title": "Reflected XSS in q at https://demo.vulnerable.example/search",
+      "cwe_id": "CWE-79",
+      "cwe_name": "Cross-site Scripting",
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N",
+      "cvss_score": 6.1,
+      "severity": "Medium",
+      "summary": "Input supplied in q is reflected into the response without encoding, so an attacker-supplied script executes in a victim browser. This corresponds to [UNVERIFIED REFERENCE REMOVED].",
+      "reproduction": "Request https://demo.vulnerable.example/search with q=<svg onload=alert(1)> and observe the payload rendered unencoded in the HTML body.",
+      "remediation": "Encode output for the context it lands in, and prefer textContent over innerHTML when inserting untrusted text.",
+      "duplicates": [],
+      "flags": [
+        "invented CVE reference: CVE-2019-3253"
+      ]
+    },
+    {
+      "source_id": "VS-006",
+      "title": "Verbose Error Message in id at https://demo.vulnerable.example/product",
+      "cwe_id": "CWE-209",
+      "cwe_name": "Information Exposure Through an Error Message",
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N",
+      "cvss_score": 5.3,
+      "severity": "Medium",
+      "summary": "An unhandled error at https://demo.vulnerable.example/product returns a stack trace, disclosing framework version and server file paths that assist further attacks.",
+      "reproduction": "Request https://demo.vulnerable.example/product with id=id=abc to trigger the error and observe the trace in the response body.",
+      "remediation": "Return a generic error to the client and log the detail server-side only.",
+      "duplicates": [],
+      "flags": []
+    }
+  ]
+}
