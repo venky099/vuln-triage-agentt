@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from triage.agent import SchemaError, TriageAgent, validate      # noqa: E402
 from triage.grounding import check, enforce                      # noqa: E402
-from triage.llm import MockBackend                               # noqa: E402
+from triage.llm import MockBackend, resolve_ollama_model         # noqa: E402
 from triage.models import RawFinding, TriagedFinding             # noqa: E402
 from triage.parsers import detect_format, load, parse_zap        # noqa: E402
 from triage.tools import (                                       # noqa: E402
@@ -337,3 +337,32 @@ def test_empty_scan_is_an_error(tmp_path):
     p.write_text(json.dumps({"findings": []}), encoding="utf-8")
     with pytest.raises(ValueError):
         load(p)
+
+
+# --------------------------- Ollama model resolution ---------------------------
+#
+# Ollama resolves a bare name only to `:latest`, so a machine holding
+# `llama3.2:3b` answers 404 for `llama3.2`. These cover the mapping that turns
+# that into a non-event, and the None that stops auto-detection pretending a
+# backend is usable when it is not.
+
+def test_bare_name_matches_a_tagged_model():
+    assert resolve_ollama_model("llama3.2", ["llama3.2:3b"]) == "llama3.2:3b"
+
+
+def test_exact_name_wins_over_prefix():
+    assert resolve_ollama_model("llama3.2:1b", ["llama3.2:3b", "llama3.2:1b"]) == "llama3.2:1b"
+
+
+def test_empty_name_takes_whatever_is_installed():
+    assert resolve_ollama_model("", ["mistral:7b"]) == "mistral:7b"
+    assert resolve_ollama_model(None, ["mistral:7b"]) == "mistral:7b"
+
+
+def test_unknown_model_does_not_resolve():
+    assert resolve_ollama_model("nope", ["llama3.2:3b"]) is None
+
+
+def test_nothing_installed_never_resolves():
+    assert resolve_ollama_model("llama3.2", []) is None
+    assert resolve_ollama_model("", []) is None

@@ -180,12 +180,20 @@ class OpenAIBackend(Backend):
         return (resp.choices[0].message.content or "").strip()
 
 
+DEFAULT_OLLAMA_MODEL = "llama3.2"
+
+
 class OllamaBackend(Backend):
     name = "ollama"
 
     def __init__(self, model: str | None = None) -> None:
         self.host = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/")
-        self.model = model or os.environ.get("LLM_MODEL", "llama3.2")
+        requested = (model or os.environ.get("LLM_MODEL", "")).strip()
+        # Resolve against what is actually pulled before the request goes out.
+        # When the tag list is unreachable this falls through to the name as
+        # asked, and the error handling below explains what happened.
+        resolved = resolve_ollama_model(requested, ollama_models(self.host))
+        self.model = resolved or requested or DEFAULT_OLLAMA_MODEL
 
     def complete_json(self, system: str, user: str) -> str:
         payload = json.dumps({
@@ -233,6 +241,31 @@ def ollama_models(host: str | None = None) -> list[str]:
     return sorted(m.get("name", "") for m in data.get("models", []) if m.get("name"))
 
 
+def resolve_ollama_model(name: str | None, available: list[str]) -> str | None:
+    """Map a requested model name onto one Ollama actually has pulled.
+
+    Ollama resolves a bare name only to `:latest`, so a machine holding
+    `llama3.2:3b` answers 404 for `llama3.2` -- a request that looks obviously
+    correct and is not. Matching on the part before the tag turns that into a
+    non-event.
+
+    An empty name means "whatever is installed", which is what auto-detection
+    wants. None means nothing matched and the caller should not pretend it did.
+    """
+    if not available:
+        return None
+    name = (name or "").strip()
+    if not name:
+        return available[0]
+    if name in available:
+        return name
+    stem = name.split(":", 1)[0]
+    for candidate in available:
+        if candidate.split(":", 1)[0] == stem:
+            return candidate
+    return None
+
+
 def _ollama_alive() -> bool:
     import socket
     from urllib.parse import urlparse
@@ -259,6 +292,9 @@ def get_backend(name: str | None = None, api_key: str | None = None) -> Backend:
             return OpenAIBackend()
         except ImportError:
             pass
-    if _ollama_alive():
+    # An open port is not a usable backend: Ollama can be running with nothing
+    # pulled, and auto-detection that selects a backend which cannot answer
+    # turns the documented first command into a stack trace.
+    if _ollama_alive() and ollama_models():
         return OllamaBackend()
     return MockBackend()
