@@ -248,3 +248,61 @@ def test_cap_findings_helper():
 
 def test_validate_scan_accepts_normal_input():
     assert validate_scan(SAMPLE) == SAMPLE
+
+
+# --------------------------- rate limiting is not a suggestion ---------------------------
+#
+# _client() used to read the LEFTMOST X-Forwarded-For entry, which is whatever
+# the caller typed. Rotating it made every request look like a new visitor and
+# the limiter did nothing at all.
+
+def _spoof_burst(n, xff):
+    """n requests, each with a different attacker-controlled XFF prefix.
+
+    The trailing address is what a real proxy appends -- the part an attacker
+    cannot forge -- so all n requests come from one client.
+    """
+    blocked = 0
+    for i in range(n):
+        r = client.post("/api/triage",
+                        json={"scan": SAMPLE, "backend": "mock"},
+                        headers={"X-Forwarded-For": xff(i)})
+        if r.status_code == 429:
+            blocked += 1
+    return blocked
+
+
+def test_rotating_x_forwarded_for_does_not_bypass_the_limit():
+    from webui.app import limiter
+    limiter._hits.clear()
+    limit = limiter.max_calls
+    blocked = _spoof_burst(limit + 5, lambda i: "10.0.0.{}, 203.0.113.9".format(i))
+    assert blocked == 5, "rotating the forgeable part of XFF bypassed the limiter"
+
+
+def test_client_identity_ignores_the_header_when_no_proxy_is_configured():
+    import webui.app as app_mod
+    original = app_mod.PROXY_DEPTH
+    app_mod.PROXY_DEPTH = 0
+    app_mod.limiter._hits.clear()
+    try:
+        blocked = _spoof_burst(app_mod.limiter.max_calls + 3, lambda i: "10.0.0.{}".format(i))
+        assert blocked == 3
+    finally:
+        app_mod.PROXY_DEPTH = original
+        app_mod.limiter._hits.clear()
+
+
+def test_flooding_the_table_cannot_reset_someone_elses_limit():
+    """Eviction used to clear() the whole table, which was a free reset button."""
+    lim = RateLimiter(max_calls=3, window_seconds=60, max_clients=10)
+    for _ in range(3):
+        lim.check("victim")
+    for i in range(50):
+        try:
+            lim.check("filler-{}".format(i))
+        except Rejected:
+            pass
+    with pytest.raises(Rejected):
+        lim.check("victim")
+    assert len(lim._hits) <= 10

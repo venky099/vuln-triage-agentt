@@ -62,9 +62,29 @@ class TriageRequest(BaseModel):
     model: str | None = Field(default=None, max_length=120)
 
 
+# How many proxies sit in front of this app. Render terminates TLS and proxies,
+# so the default is 1; set 0 when running with nothing in front.
+PROXY_DEPTH = max(0, int(os.environ.get("TRIAGE_PROXY_DEPTH", "1")))
+
+
 def _client(request: Request) -> str:
-    fwd = request.headers.get("x-forwarded-for", "")
-    return fwd.split(",")[0].strip() or (request.client.host if request.client else "?")
+    """Identify the caller for rate limiting.
+
+    X-Forwarded-For is client-controlled up to the point a trusted proxy
+    appends to it, so the LEFTMOST entry is whatever the caller typed. Reading
+    it made the limiter free to bypass: rotate the header and every request
+    looked like a new visitor. Count PROXY_DEPTH entries from the RIGHT
+    instead -- that is the address our own proxy observed.
+    """
+    peer = request.client.host if request.client else "?"
+    if not PROXY_DEPTH:
+        return peer
+    parts = [p.strip() for p in request.headers.get("x-forwarded-for", "").split(",") if p.strip()]
+    if len(parts) < PROXY_DEPTH:
+        # Fewer hops than configured: the header is short or absent, so it
+        # cannot be trusted to name anyone. Fall back to the socket.
+        return peer
+    return parts[-PROXY_DEPTH]
 
 
 def _serialise(findings) -> list[dict]:

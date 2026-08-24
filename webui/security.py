@@ -60,9 +60,11 @@ def cap_findings(n: int) -> None:
 class RateLimiter:
     """Fixed window, per client. Adequate for a single-instance demo."""
 
-    def __init__(self, max_calls: int = 15, window_seconds: int = 60) -> None:
+    def __init__(self, max_calls: int = 15, window_seconds: int = 60,
+                 max_clients: int = 4096) -> None:
         self.max_calls = max_calls
         self.window = window_seconds
+        self.max_clients = max_clients
         self._hits: dict[str, deque[float]] = defaultdict(deque)
 
     def check(self, key: str) -> None:
@@ -74,8 +76,29 @@ class RateLimiter:
             raise Rejected("Rate limit reached ({}/minute). Try again shortly."
                            .format(self.max_calls))
         hits.append(now)
-        if len(self._hits) > 4096:
-            self._hits.clear()
+        if len(self._hits) > self.max_clients:
+            self._evict(now)
+
+    def _evict(self, now: float) -> None:
+        """Drop clients whose window has expired.
+
+        The old version cleared the whole table, which handed an attacker a
+        reset button: manufacture enough distinct identities and everyone's
+        counters vanish, including your own. Only entries that are already
+        spent may be dropped.
+        """
+        for key in [k for k, v in self._hits.items() if not v or now - v[-1] > self.window]:
+            del self._hits[key]
+        if len(self._hits) <= self.max_clients:
+            return
+        # Still oversized. Any eviction inside a live window hands that client a
+        # fresh allowance, so evict the ones with the least to lose first:
+        # fewest hits, then least recently seen. A client already at the limit
+        # is exactly who the table exists to remember, so it goes last -- which
+        # means flooding with new identities cannot buy anyone a reset.
+        ranked = sorted(self._hits.items(), key=lambda kv: (len(kv[1]), kv[1][-1]))
+        for key, _ in ranked[:len(self._hits) - self.max_clients]:
+            del self._hits[key]
 
 
 def cap_local_findings(n: int) -> None:

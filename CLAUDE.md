@@ -22,7 +22,7 @@ vulntriage ...                                                # same, after `pip
 python evals/run_eval.py -n 50                                # mock backend
 python evals/run_eval.py -n 20 --backend ollama               # needs `ollama serve`
 
-pytest -q                                                     # 78 tests, no network
+pytest -q                                                     # 86 tests, no network
 pytest tests/test_triage.py::test_invented_cve_is_caught -q   # one test
 pytest -k grounding -q
 
@@ -32,9 +32,9 @@ uvicorn webui.app:app --reload --port 8000                    # web UI
 Core CLI, tests and the mock eval need no dependencies and no API key. The web UI needs
 `pip install -r requirements.txt` (fastapi/uvicorn/jinja2, plus httpx for `tests/test_webui.py`).
 
-**CLI exit code 1 means findings were flagged for review**, not that the run failed
-(failure is 1 from an exception, 2 from an unreadable scan). Don't "fix" a non-zero exit
-from a successful triage.
+**CLI exit code 1 means a human is needed** — either a finding carries an ungrounded
+claim, or a finding could not be triaged and is absent from the report (2 is an unreadable
+scan). Don't "fix" a non-zero exit from a successful triage.
 
 ## Architecture
 
@@ -50,9 +50,14 @@ every number and identifier in the output is produced or verified by code.**
   rejected. No LLM imports here, on purpose — everything downstream is unit-testable
   without a model.
 - `triage/agent.py` — `validate()` is a hand-rolled JSON Schema subset checker (no
-  dependency); only the keywords `TRIAGE_SCHEMA` actually uses are implemented, and an
-  unsupported keyword should be treated as a bug, not a silent pass. `_ask()` retries on a
-  schema violation by telling the model what was wrong. `_context()` defines *exactly* what
+  dependency); only the keywords `TRIAGE_SCHEMA` actually uses are implemented, and anything
+  else raises `UnsupportedSchema`. That is deliberately *not* a `SchemaError`: a `SchemaError`
+  is retried against the model, which is nonsense when the checker itself cannot evaluate the
+  rule. Widening the schema means widening the checker. `_ask()` retries on a schema violation
+  by telling the model what was wrong; `_complete()` retries the *network* with backoff on a
+  separate budget, because a dropped connection says nothing about the model's answer. A
+  finding that still fails lands in `TriageResult.errors` and the run continues — one blip
+  must not discard findings already paid for. `_context()` defines *exactly* what
   the model may see — adding a field there widens what it can draw on, so it also widens
   what grounding must be able to trace.
 - `triage/tools.py` — CVSS v3.1 arithmetic (`_roundup` follows Appendix A integer
@@ -77,7 +82,11 @@ every number and identifier in the output is produced or verified by code.**
   model pass, not two. `finalise_grounded()` lives in `agent.py` precisely because the CLI
   and the web UI both need identical post-processing.
 - `webui/security.py` — payload/finding caps, per-client fixed-window rate limiter, and
-  OpenAI key shape check. The key is per-request only: never logged, never persisted,
+  OpenAI key shape check. Two things the limiter has to get right: `_client()` in `app.py`
+  counts `TRIAGE_PROXY_DEPTH` entries from the *right* of `X-Forwarded-For` (the leftmost is
+  whatever the caller typed, and reading it made the limiter free to bypass), and eviction
+  drops the clients with the fewest hits rather than clearing the table, so flooding it with
+  new identities cannot buy anyone a reset. The key is per-request only: never logged, never persisted,
   never echoed — including in error messages, which is why the triage handler reports only
   `type(exc).__name__`.
 
