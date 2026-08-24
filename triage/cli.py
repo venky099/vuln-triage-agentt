@@ -93,9 +93,17 @@ def main(argv: list[str] | None = None) -> int:
         if result.flagged:
             print("{} finding(s) contain ungrounded claims and are flagged for review"
                   .format(len(result.flagged)), file=sys.stderr)
+        # A partial run must never look like a complete one.
+        if result.errors:
+            print("", file=sys.stderr)   # keep the report on stdout clean
+            print("{} finding(s) could not be triaged and are ABSENT from this report:"
+                  .format(len(result.errors)), file=sys.stderr)
+            for source_id, reason in result.errors:
+                print("  {} - {}".format(source_id, reason), file=sys.stderr)
 
-    # Non-zero when something needs a human before this report goes out.
-    return 1 if result.flagged else 0
+    # Non-zero when something needs a human before this report goes out --
+    # either an ungrounded claim, or a finding missing from the report entirely.
+    return 1 if (result.flagged or result.errors) else 0
 
 
 if __name__ == "__main__":

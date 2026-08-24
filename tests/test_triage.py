@@ -14,7 +14,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from triage.agent import SchemaError, TriageAgent, validate      # noqa: E402
+from triage.agent import (                                       # noqa: E402
+    SchemaError, TriageAgent, UnsupportedSchema, validate,
+)
 from triage.grounding import check, enforce                      # noqa: E402
 from triage.llm import MockBackend, resolve_ollama_model         # noqa: E402
 from triage.models import RawFinding, TriagedFinding             # noqa: E402
@@ -366,3 +368,87 @@ def test_unknown_model_does_not_resolve():
 def test_nothing_installed_never_resolves():
     assert resolve_ollama_model("llama3.2", []) is None
     assert resolve_ollama_model("", []) is None
+
+
+# --------------------------- resilience: the network is not the model ---------------------------
+#
+# complete_json() used to sit outside the try in _ask(), so one dropped
+# connection on finding 45 of 50 discarded the 44 already paid for.
+
+class _Blip(MockBackend):
+    """Fails on the Nth call, then behaves."""
+    name = "blip"
+
+    def __init__(self, fail_on, times=1):
+        self.n = 0
+        self.fail_on = fail_on
+        self.times = times
+
+    def complete_json(self, system, user):
+        self.n += 1
+        if self.fail_on <= self.n < self.fail_on + self.times:
+            raise ConnectionError("connection reset by peer")
+        return super().complete_json(system, user)
+
+
+def _findings(n):
+    return [RawFinding(id="R-{}".format(i), scanner="s", kind="SQL Injection",
+                       url="https://t.example/p{}".format(i), parameter="id",
+                       evidence="database error in the response body")
+            for i in range(1, n + 1)]
+
+
+def test_transient_failure_is_retried_not_fatal():
+    result = TriageAgent(backend=_Blip(fail_on=3), backoff=0).run(_findings(5))
+    assert len(result.findings) == 5
+    assert result.errors == []
+
+
+def test_network_retry_does_not_spend_the_schema_budget():
+    """A dropped connection says nothing about the model's ability to fill the form."""
+    result = TriageAgent(backend=_Blip(fail_on=2), backoff=0).run(_findings(3))
+    assert result.schema_retries == 0
+
+
+def test_unrecoverable_finding_does_not_discard_the_others():
+    # net_retries=2 means three attempts per finding, so failing calls 3-5
+    # exhausts R-3 exactly and leaves R-4 onward with a working connection.
+    agent = TriageAgent(backend=_Blip(fail_on=3, times=3), backoff=0)
+    result = agent.run(_findings(5))
+    assert [f.source_id for f in result.findings] == ["R-1", "R-2", "R-4", "R-5"]
+    assert len(result.errors) == 1
+    assert result.errors[0][0] == "R-3"
+    assert "ConnectionError" in result.errors[0][1]
+
+
+# --------------------------- validate() must not pass what it cannot check ---------------------------
+
+def test_unimplemented_schema_type_raises_rather_than_passing():
+    """The docstring promises no silent pass; this is what enforces it."""
+    import copy as _copy
+    from triage import models as _models
+    original = _copy.deepcopy(_models.TRIAGE_SCHEMA["properties"])
+    _models.TRIAGE_SCHEMA["properties"]["title"] = {"type": "integer", "minimum": 5}
+    try:
+        with pytest.raises(UnsupportedSchema):
+            validate(_valid_payload())
+    finally:
+        _models.TRIAGE_SCHEMA["properties"] = original
+
+
+def test_unsupported_schema_is_not_a_schema_error():
+    """SchemaError is retried against the model; this must not be, so it is a
+    separate type. Nothing the model returns can satisfy an uncheckable rule."""
+    assert not issubclass(UnsupportedSchema, SchemaError)
+
+
+def _valid_payload():
+    return {
+        "title": "SQL Injection in id at https://t.example/p",
+        "cwe_id": "CWE-89",
+        "cvss_metrics": {"AV": "N", "AC": "L", "PR": "N", "UI": "N",
+                         "S": "U", "C": "H", "I": "H", "A": "H"},
+        "summary": "s" * 40,
+        "reproduction": "r" * 30,
+        "remediation": "m" * 40,
+    }

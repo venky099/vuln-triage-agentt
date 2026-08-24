@@ -13,6 +13,8 @@ finished report is produced or verified by code.
 from __future__ import annotations
 
 import json
+import time
+import urllib.error
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -22,15 +24,31 @@ from .models import TRIAGE_SCHEMA, RawFinding, TriagedFinding
 from .tools import build_vector, cwe_catalogue, dedupe, lookup_cwe, score_cvss
 
 
+# Failures that mean "try again", not "this finding is unprocessable".
+# Provider SDKs raise their own classes, but they all derive from OSError
+# or urllib's URLError, so recognising them stays dependency-free.
+TRANSIENT_ERRORS = (ConnectionError, TimeoutError, urllib.error.URLError, OSError)
+
+
 class SchemaError(ValueError):
-    pass
+    """The model's answer did not fit the form. Retryable: tell it what was wrong."""
+
+
+class UnsupportedSchema(Exception):
+    """TRIAGE_SCHEMA uses a keyword this checker does not implement.
+
+    Deliberately NOT a SchemaError. A SchemaError is retried against the model,
+    which would be nonsense here -- nothing the model returns can satisfy a
+    constraint the checker cannot evaluate. Whoever widened the schema has to
+    widen the checker too, and a loud failure is how they find that out.
+    """
 
 
 def validate(payload: Any) -> dict[str, Any]:
     """Validate against TRIAGE_SCHEMA. Small hand-rolled checker, no dependency.
 
     Only the subset of JSON Schema the form actually uses is implemented, and
-    an unsupported keyword is a bug rather than a silent pass.
+    an unsupported keyword raises UnsupportedSchema rather than passing silently.
     """
     if not isinstance(payload, dict):
         raise SchemaError("expected a JSON object")
@@ -67,8 +85,19 @@ def validate(payload: Any) -> dict[str, Any]:
                 sub_spec = spec["properties"].get(sub)
                 if sub_spec is None:
                     raise SchemaError("unexpected metric: {}".format(sub))
+                if "enum" not in sub_spec:
+                    raise UnsupportedSchema(
+                        "{}.{} uses no enum; this checker only implements enum "
+                        "for metric properties".format(key, sub))
                 if sub_value not in sub_spec["enum"]:
                     raise SchemaError("{}.{}={!r} not in {}".format(key, sub, sub_value, sub_spec["enum"]))
+        else:
+            # Reached only when TRIAGE_SCHEMA grows a type with no branch above.
+            # Falling through would accept anything for that field, which is the
+            # exact silent pass this checker exists to prevent.
+            raise UnsupportedSchema(
+                "{} declares type {!r}, which validate() does not implement".format(
+                    key, spec.get("type")))
     return payload
 
 
@@ -131,6 +160,8 @@ class TriageResult:
     duplicates_removed: int = 0
     schema_retries: int = 0
     backend: str = ""
+    # (source id, what went wrong) for findings that could not be triaged at all.
+    errors: list[tuple[str, str]] = field(default_factory=list)
 
     @property
     def flagged(self) -> list[TriagedFinding]:
@@ -145,11 +176,35 @@ class TriageResult:
 
 class TriageAgent:
     def __init__(self, backend: Backend | None = None, *, grounding: bool = True,
-                 redact: bool = True, max_retries: int = 2) -> None:
+                 redact: bool = True, max_retries: int = 2,
+                 net_retries: int = 2, backoff: float = 1.0) -> None:
         self.backend = backend or get_backend()
         self.grounding = grounding
         self.redact = redact
-        self.max_retries = max_retries
+        self.max_retries = max_retries      # schema violations
+        self.net_retries = net_retries      # dropped connections, 429s, timeouts
+        self.backoff = backoff
+        self._last_transient = ""
+
+    def _complete(self, prompt: str) -> str:
+        """The network call, retried with backoff.
+
+        Deliberately separate from the schema-retry budget: a dropped connection
+        says nothing about whether the model can fill the form, so spending a
+        schema retry on it would punish the model for the network. Before this
+        existed, one blip on finding 45 of 50 discarded the 44 already paid for.
+        """
+        delay = self.backoff
+        for attempt in range(self.net_retries + 1):
+            try:
+                return self.backend.complete_json(SYSTEM_PROMPT, prompt)
+            except TRANSIENT_ERRORS as exc:
+                if attempt == self.net_retries:
+                    raise
+                self._last_transient = "{}: {}".format(type(exc).__name__, exc)
+                time.sleep(delay)
+                delay *= 2
+        raise AssertionError("unreachable")
 
     def _ask(self, raw: RawFinding) -> tuple[dict[str, Any], int]:
         """Ask, validate, and on a schema violation say what was wrong and retry."""
@@ -161,7 +216,7 @@ class TriageAgent:
                 user + "\n\nYour previous answer was rejected: " + last_error +
                 "\nReturn corrected JSON matching the schema exactly."
             )
-            text = self.backend.complete_json(SYSTEM_PROMPT, prompt)
+            text = self._complete(prompt)
             try:
                 payload = json.loads(text)
             except json.JSONDecodeError as exc:
@@ -214,7 +269,18 @@ class TriageAgent:
         for i, (raw, dupes) in enumerate(grouped, 1):
             if progress:
                 progress(i, len(grouped), raw)
-            triaged = self.triage_one(raw, dupes)
+            try:
+                triaged = self.triage_one(raw, dupes)
+            except UnsupportedSchema:
+                # A bug in this codebase, not a bad finding. Retrying the other
+                # 49 would waste the same amount of money to fail identically.
+                raise
+            except Exception as exc:
+                # One unprocessable finding must not discard the findings
+                # already paid for. Record it and keep going; the caller decides
+                # whether a partial report is worth having.
+                result.errors.append((raw.id, "{}: {}".format(type(exc).__name__, exc)))
+                continue
             result.schema_retries += getattr(triaged, "_retries", 0)
             result.findings.append(triaged)
         result.findings.sort(key=lambda f: -f.cvss_score)
