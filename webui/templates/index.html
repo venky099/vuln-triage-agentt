@@ -3,163 +3,129 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Vulnerability Triage Agent — watch an LLM invent a CVE, then stop it</title>
-<meta name="description" content="Turns scanner output into a pentest report, and shows exactly what a language model makes up when nothing checks it.">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🔍</text></svg>">
+<title>Vulnerability Triage Agent</title>
+<meta name="description" content="Turns scanner output into a pentest report, and shows what the model made up.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🛡️</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
 
-<header class="top">
-  <div class="wrap top-in">
-    <span class="brand">vuln-triage-agent <span class="ver">v{{ version }}</span></span>
-    <a class="ghost-link" href="https://github.com/venky099/vuln-triage-agent" target="_blank" rel="noopener">source</a>
+<!-- ── app bar ─────────────────────────────────────────────────────────── -->
+<header class="appbar">
+  <span class="brand">
+    <svg class="brand-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
+    vulntriage
+  </span>
+
+  <span class="divider" aria-hidden="true"></span>
+
+  <div class="seg" role="radiogroup" aria-label="Model">
+    <label class="seg-opt"><input type="radio" name="backend" value="mock" checked><span>Simulated</span></label>
+    {% if ollama_models %}
+    <label class="seg-opt"><input type="radio" name="backend" value="ollama"><span>Local</span></label>
+    {% endif %}
+    <label class="seg-opt"><input type="radio" name="backend" value="openai"><span>OpenAI</span></label>
   </div>
+
+  {% if ollama_models %}
+  <select id="ollama-model" class="inline-field" aria-label="Ollama model" hidden>
+    {% for m in ollama_models %}<option value="{{ m }}">{{ m }}</option>{% endfor %}
+  </select>
+  {% endif %}
+  <input id="api-key" class="inline-field" type="password" placeholder="sk-..." autocomplete="off" spellcheck="false" aria-label="OpenAI API key" hidden>
+
+  <span class="spacer"></span>
+
+  <button class="btn primary" id="run" type="button">
+    <span id="run-label">Run triage</span>
+    <kbd class="in-btn">⌘⏎</kbd>
+  </button>
+
+  <button class="icon-link" id="how-open" type="button" aria-label="How the checks work" title="How the checks work">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></svg>
+  </button>
+  <a class="icon-link" href="https://github.com/venky099/vuln-triage-agent" target="_blank" rel="noopener" aria-label="Source" title="Source">
+    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 .3a12 12 0 0 0-3.8 23.4c.6.1.8-.3.8-.6v-2c-3.3.7-4-1.6-4-1.6-.6-1.4-1.4-1.8-1.4-1.8-1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.7-1.6-2.7-.3-5.5-1.3-5.5-5.9 0-1.3.5-2.4 1.2-3.2-.1-.3-.5-1.5.1-3.2 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0c2.3-1.5 3.3-1.2 3.3-1.2.6 1.7.2 2.9.1 3.2.8.8 1.2 1.9 1.2 3.2 0 4.6-2.8 5.6-5.5 5.9.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6A12 12 0 0 0 12 .3"/></svg>
+  </a>
 </header>
+<div class="progress" id="progress" hidden><i></i></div>
 
-<section class="hero">
-  <div class="wrap">
-    <h1>Watch a language model <span class="bad">invent a CVE</span>,<br>then watch it get caught.</h1>
-    <p class="lede">
-      Paste scanner output and this drafts a pentest report. Then flip one switch to see
-      the difference between <strong>what the model wrote</strong> and <strong>what actually
-      ships</strong> — because a model asked to sound authoritative will cite an
-      identifier that does not exist, in exactly the same confident tone as everything true.
-    </p>
-  </div>
-</section>
+<!-- ── workspace ───────────────────────────────────────────────────────── -->
+<div class="workspace">
 
-<main class="wrap">
-
-  <div class="card">
-    <div class="field">
-      <div class="field-head">
-        <label for="scan">Scanner output <span class="note">VibeScanner, OWASP ZAP or Nmap JSON — detected automatically</span></label>
-        <button class="link-btn" id="load-example" type="button">Load example scan</button>
-      </div>
-      <textarea id="scan" spellcheck="false" autocomplete="off"
-        placeholder='{"target": "https://example.com", "findings": [{"id": "VS-001", "type": "SQL Injection", "url": "...", "parameter": "id", "payload": "...", "evidence": "..."}]}'></textarea>
-      <p class="hint">Up to {{ max_findings }} findings. Nothing is stored.</p>
+  <!-- input pane -->
+  <section class="pane pane-input" aria-label="Scanner output">
+    <div class="pane-head">
+      <span class="pane-title">scan.json</span>
+      <span class="chip" id="parse-chip">Empty</span>
+      <span class="spacer"></span>
+      <button class="link-btn" id="load-example" type="button">Load example</button>
     </div>
+    <textarea id="scan" spellcheck="false" autocomplete="off" aria-label="Scanner output JSON"
+      placeholder="Paste scanner JSON — VibeScanner, Burp Suite, OWASP ZAP or Nmap"></textarea>
+    <div class="pane-foot">Up to {{ max_findings }} findings · nothing is stored</div>
+  </section>
 
-    <div class="field">
-      <label>Model</label>
-      <div class="radios">
-        <label class="radio">
-          <input type="radio" name="backend" value="mock" checked>
-          <span><b>Simulated model</b> — free, deterministic, no key needed</span>
-        </label>
-        {% if ollama_models %}
-        <label class="radio">
-          <input type="radio" name="backend" value="ollama">
-          <span><b>Local model</b> — Ollama on this machine, free, no key</span>
-        </label>
-        {% endif %}
-        <label class="radio">
-          <input type="radio" name="backend" value="openai">
-          <span><b>Hosted model</b> — bring your own OpenAI key</span>
-        </label>
-      </div>
+  <div class="split" aria-hidden="true"></div>
 
-      {% if ollama_models %}
-      <div id="ollama-row" class="key-row" hidden>
-        <select id="ollama-model">
-          {% for m in ollama_models %}<option value="{{ m }}">{{ m }}</option>{% endfor %}
-        </select>
-        <p class="hint">
-          Runs entirely on this machine, so it costs nothing — but expect roughly
-          a minute per finding on CPU. Capped at {{ max_findings_local }} findings
-          here; use the CLI for a full scan.
-        </p>
-      </div>
-      {% endif %}
-      <div id="key-row" class="key-row" hidden>
-        <input id="api-key" type="password" placeholder="sk-..." autocomplete="off" spellcheck="false">
-        <p class="hint key-hint">
-          Used for this one request, then discarded. Never written to disk, never logged,
-          never included in a response — including error messages, which is where keys
-          usually leak.
-        </p>
+  <!-- results pane -->
+  <section class="pane pane-results" aria-label="Report">
+
+    <div class="pane-head" id="results-head" hidden>
+      <span class="pane-title" id="verdict-title">Report</span>
+      <span class="spacer"></span>
+      <div class="ab-track" role="group" aria-label="Grounding checks">
+        <button class="ab-btn raw" id="view-raw" type="button" aria-pressed="false">Raw output</button>
+        <button class="ab-btn safe" id="view-safe" type="button" aria-pressed="true">After checks</button>
       </div>
     </div>
 
-    <div class="actions">
-      <button class="btn primary" id="run">Triage findings</button>
-      <span id="status" class="status"></span>
-    </div>
-  </div>
-
-  <section id="results" hidden>
-
-    <div class="verdict-bar">
-      <div class="verdict-left">
-        <h2 id="verdict-title">Report</h2>
-        <p id="verdict-sub" class="sub"></p>
+    <div class="pane-body" id="results-body">
+      <!-- empty state, replaced once a run completes -->
+      <div class="empty" id="empty">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
+        <h2>No report yet</h2>
+        <p>Paste scanner output on the left and run a triage. You will get a report, plus a switch that shows exactly what the model made up.</p>
       </div>
-      <div class="counts" id="counts"></div>
-    </div>
 
-    <!-- the centrepiece -->
-    <div class="toggle-bar">
-      <div class="toggle-copy">
-        <b>Grounding checks</b>
-        <span id="toggle-explain">on — claims traced to the scan data</span>
+      <div id="report" hidden>
+        <div class="stats" id="counts"></div>
+        <p class="meta-line" id="verdict-sub"></p>
+        <div id="diff-banner" class="banner" hidden></div>
+        <div id="findings" class="findings"></div>
       </div>
-      <button id="toggle" class="switch" role="switch" aria-checked="true" aria-label="Toggle grounding checks">
-        <span class="knob"></span>
-      </button>
     </div>
 
-    <div id="diff-banner" class="diff-banner" hidden></div>
-
-    <div id="findings"></div>
-
-    <div class="downloads">
-      <span>Download report:</span>
-      <button class="btn small" data-dl="markdown">Markdown</button>
-      <button class="btn small" data-dl="html">HTML</button>
-      <button class="btn small" data-dl="json">JSON</button>
+    <div class="pane-foot" id="results-foot" hidden>
+      <span class="spacer"></span>
+      <span class="foot-label">Export</span>
+      <button class="btn sm" data-dl="markdown">Markdown</button>
+      <button class="btn sm" data-dl="html">HTML</button>
+      <button class="btn sm" data-dl="json">JSON</button>
     </div>
   </section>
 
-  <section class="explainer">
+</div>
+
+<div class="toasts" id="toasts" role="status" aria-live="polite"></div>
+
+<!-- kept out of the workspace so the panes own the viewport -->
+<dialog id="how-dialog" class="how-dialog">
+  <div class="how-head">
     <h3>How the checks work</h3>
-    <div class="grid">
-      <div>
-        <h4>The model never states a number</h4>
-        <p>It picks the eight CVSS metrics — judgement calls. The score is then computed in
-        code from CVSS v3.1 arithmetic. A model never asked for a number cannot invent one,
-        and the output schema rejects a score field outright if it tries.</p>
-      </div>
-      <div>
-        <h4>Two sources of truth, nothing else</h4>
-        <p>Every claim must trace to the scanner output or a local CWE catalogue. CVE
-        citations, CWE identifiers, URLs, scores and impact language are each checked
-        against them.</p>
-      </div>
-      <div>
-        <h4>Verified in code, not by the model</h4>
-        <p>Asking a model to check its own work does not help: the process that invented
-        the CVE will happily confirm it is real. Verification happens against data the
-        model cannot influence.</p>
-      </div>
-      <div>
-        <h4>Redacted, never silently dropped</h4>
-        <p>An ungrounded claim is replaced with a visible marker and flagged with a reason.
-        A defence whose failure mode is invisible is worse than no defence.</p>
-      </div>
-    </div>
-  </section>
-
-</main>
-
-<footer class="wrap foot">
-  <p>
-    The simulated model is a deterministic stand-in that fabricates references on a fixed
-    subset of findings, so the checks have something to catch without anyone paying for
-    tokens. It is not evidence about how any real model behaves — use your own key for that.
-  </p>
-</footer>
+    <button class="icon-link" id="how-close" type="button" aria-label="Close">✕</button>
+  </div>
+  <div class="how-body">
+    <p><b>The model never states a number.</b> It picks the eight CVSS metrics; the score is computed in code. A model never asked for a number cannot invent one.</p>
+    <p><b>Two sources of truth.</b> Every claim must trace to the scanner output or a local CWE catalogue — CVEs, CWEs, URLs, scores and impact language are each checked against them.</p>
+    <p><b>Verified in code, not by the model.</b> The process that invented a CVE will happily confirm it is real, so verification runs against data the model cannot influence.</p>
+    <p><b>Redacted, never silently dropped.</b> An ungrounded claim is replaced with a visible marker and a reason. A defence whose failure mode is invisible is worse than none.</p>
+    <p class="how-note">The simulated model is a deterministic stand-in that fabricates on a fixed subset, so the checks have something to catch with no key. It is not evidence about how any real model behaves.</p>
+  </div>
+</dialog>
 
 <script src="/static/app.js"></script>
 </body>
