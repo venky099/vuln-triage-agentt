@@ -4,3 +4,11 @@ __pycache__/
 venv/
 .pytest_cache/
 .env
+
+# `pip install -e .` (README quickstart and CI both run it) drops this here
+*.egg-info/
+build/
+dist/
+
+# Local tool state, not project content
+.claude/settings.local.json
