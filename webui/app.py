@@ -129,12 +129,17 @@ async def triage(req: TriageRequest, request: Request):
         return JSONResponse({"ok": False, "error": "Could not parse scan: {}".format(exc)},
                             status_code=400)
 
+    # Deduplicate before choosing a backend: the local cap bounds wall-clock
+    # time, which is driven by model calls, and duplicates cost none. Counting
+    # raw findings refused the bundled example (6 raw, 5 after merging).
+    grouped = dedupe(findings)
+
     # --- backend ---
     if req.backend == "ollama":
         # Local models are slow enough that a full scan would hold the request
         # open for minutes, so this path is capped harder than the others.
         try:
-            cap_local_findings(len(findings))
+            cap_local_findings(len(grouped))
             model = validate_ollama_model(req.model, ollama_models())
         except Rejected as exc:
             return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
@@ -157,7 +162,6 @@ async def triage(req: TriageRequest, request: Request):
 
     # --- one pass of the model, two views ---
     agent = TriageAgent(backend=backend, grounding=False)
-    grouped = dedupe(findings)
     raw_view, grounded_view = [], []
     try:
         for raw, dupes in grouped:

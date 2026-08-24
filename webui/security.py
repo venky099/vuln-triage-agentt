@@ -82,8 +82,9 @@ def cap_local_findings(n: int) -> None:
     if n > MAX_FINDINGS_LOCAL:
         raise Rejected(
             "A local model takes about a minute per finding, so the browser caps "
-            "Ollama runs at {} (this scan has {}). Use the simulated model here, "
-            "or run the CLI for the full scan.".format(MAX_FINDINGS_LOCAL, n))
+            "Ollama runs at {} (this scan needs {} after merging duplicates). "
+            "Use the simulated model here, or run the CLI for the full scan."
+            .format(MAX_FINDINGS_LOCAL, n))
 
 
 def validate_ollama_model(name: str | None, available: list[str]) -> str:

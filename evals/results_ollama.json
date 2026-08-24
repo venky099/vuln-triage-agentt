@@ -1,16 +1,14 @@
 {
   "backend": "ollama",
-  "sample_size": 12,
+  "sample_size": 20,
   "grounding_off": {
-    "findings_with_ungrounded_claims": 5,
-    "total_violations": 5,
-    "by_category": {
-      "URL not present in scan data": 5
-    }
+    "findings_with_ungrounded_claims": 0,
+    "total_violations": 0,
+    "by_category": {}
   },
   "grounding_on": {
-    "findings_flagged": 5,
-    "ungrounded_claims_in_published_text": 5,
+    "findings_flagged": 0,
+    "ungrounded_claims_in_published_text": 0,
     "schema_retries": 0
   },
   "note": "With the mock backend these numbers describe a simulated model and are reproducible, not empirical. Run with --backend ollama or openai to measure a real model."
