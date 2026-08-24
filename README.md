@@ -316,7 +316,7 @@ python -m venv .venv && .venv\Scripts\activate     # Windows
 python -m triage.cli data/sample_scan.json                    # markdown to stdout
 python -m triage.cli data/sample_scan.json -f html -o r.html  # styled HTML report
 python evals/run_eval.py -n 50                                # the measurement
-pytest -q                                                     # 78 tests
+pytest -q                                                     # 97 tests
 ```
 
 No API key and no dependencies are needed for any of the above.
@@ -345,8 +345,12 @@ backend that cannot answer turns the first documented command into a stack trace
 
 ### Input formats
 
-VibeScanner JSON (primary), OWASP ZAP, and Nmap. Detected automatically; override
-with `--input-format`.
+VibeScanner JSON (primary), Burp Suite, OWASP ZAP, and Nmap. Detected automatically;
+override with `--input-format`.
+
+Burp is read in both shapes it ships in: Professional's report export (a flat `issues`
+array with HTML issue detail) and Enterprise/REST (each issue wrapped in an
+`issue_events` envelope).
 
 ## Honesty note about the mock backend
 
@@ -382,13 +386,13 @@ making any claim about real-world hallucination rates.
 ```
 triage/models.py      dataclasses + the output schema
 triage/tools.py       CVSS v3.1 scorer, CWE catalogue, dedupe
-triage/parsers.py     VibeScanner / ZAP / Nmap -> RawFinding
+triage/parsers.py     VibeScanner / Burp / ZAP / Nmap -> RawFinding
 triage/llm.py         openai | ollama | mock backends
 triage/agent.py       the loop: ask, validate, retry, compute, ground
 triage/grounding.py   the checks, and redaction
 triage/report.py      markdown / HTML / JSON
 evals/run_eval.py     hallucination measurement
-tests/                78 tests, no network needed
+tests/                97 tests, no network needed
 ```
 
 ## Related

@@ -22,7 +22,7 @@ vulntriage ...                                                # same, after `pip
 python evals/run_eval.py -n 50                                # mock backend
 python evals/run_eval.py -n 20 --backend ollama               # needs `ollama serve`
 
-pytest -q                                                     # 86 tests, no network
+pytest -q                                                     # 97 tests, no network
 pytest tests/test_triage.py::test_invented_cve_is_caught -q   # one test
 pytest -k grounding -q
 
@@ -60,6 +60,14 @@ every number and identifier in the output is produced or verified by code.**
   must not discard findings already paid for. `_context()` defines *exactly* what
   the model may see — adding a field there widens what it can draw on, so it also widens
   what grounding must be able to trace.
+- `triage/parsers.py` — one function per scanner, all landing on `RawFinding`.
+  `detect_format()` keys on a field unique to each (`site`→zap, `hosts`→nmap,
+  `issues`/`issue_events`→burp). The Burp parser carries the awkward cases: detail
+  arrives as HTML and is stripped, `<host ip=...>` survives XML conversion as a dict,
+  and the parameter is read out of Burp's own "The `x` parameter" phrasing — which is
+  scan data, so it stays traceable, and a miss leaves the field empty rather than
+  inventing a name. `webui/static/app.js` mirrors `detect_format()` for its format
+  chip; the two have to move together.
 - `triage/tools.py` — CVSS v3.1 arithmetic (`_roundup` follows Appendix A integer
   arithmetic, not `round()`), the CWE catalogue loader, and `dedupe` (keys on class +
   path-without-query + parameter).

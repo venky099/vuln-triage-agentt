@@ -20,7 +20,9 @@ from triage.agent import (                                       # noqa: E402
 from triage.grounding import check, enforce                      # noqa: E402
 from triage.llm import MockBackend, resolve_ollama_model         # noqa: E402
 from triage.models import RawFinding, TriagedFinding             # noqa: E402
-from triage.parsers import detect_format, load, parse_zap        # noqa: E402
+from triage.parsers import (                                     # noqa: E402
+    detect_format, load, parse_burp, parse_zap,
+)
 from triage.tools import (                                       # noqa: E402
     build_vector, dedupe, lookup_cwe, score_cvss, severity_of,
 )
@@ -452,3 +454,98 @@ def _valid_payload():
         "reproduction": "r" * 30,
         "remediation": "m" * 40,
     }
+
+
+# --------------------------- Burp Suite ---------------------------
+#
+# Two shapes reach us in practice: Professional's report export (a flat
+# `issues` array, detail written as HTML) and Enterprise/REST (each issue
+# wrapped in an `issue_events` envelope, detail as plain text).
+
+BURP_PRO = {"issues": [{
+    "serial_number": "8481624190156800",
+    "name": "SQL injection",
+    "host": {"#text": "https://shop.example", "@ip": "10.0.0.4"},
+    "path": "/product",
+    "severity": "High",
+    "confidence": "Certain",
+    "issueBackground": "<p>SQL injection vulnerabilities arise when...</p>",
+    "issueDetail": "<p>The <b>id</b> parameter appears to be vulnerable to SQL "
+                   "injection attacks.</p>",
+}]}
+
+BURP_ENTERPRISE = {"issue_events": [{
+    "id": "1", "type": "issue_found",
+    "issue": {
+        "name": "Cross-site scripting (reflected)",
+        "serial_number": "77",
+        "origin": "https://shop.example",
+        "path": "/search",
+        "severity": "high",
+        "description": "The q parameter is copied into the response without encoding.",
+    },
+}]}
+
+
+def test_burp_is_detected_from_either_shape():
+    assert detect_format(BURP_PRO) == "burp"
+    assert detect_format(BURP_ENTERPRISE) == "burp"
+
+
+def test_burp_professional_export():
+    f = parse_burp(BURP_PRO)[0]
+    assert f.scanner == "Burp Suite"
+    assert f.id == "8481624190156800"
+    assert f.kind == "SQL injection"
+    assert f.url == "https://shop.example/product"
+    assert f.raw["burp_severity"] == "High"
+
+
+def test_burp_enterprise_envelope_is_unwrapped():
+    f = parse_burp(BURP_ENTERPRISE)[0]
+    assert f.kind == "Cross-site scripting (reflected)"
+    assert f.url == "https://shop.example/search"
+
+
+def test_burp_html_detail_is_reduced_to_text():
+    """Burp writes detail as HTML. Tags in the corpus would be noise the model
+    has to read and grounding has to match against."""
+    f = parse_burp(BURP_PRO)[0]
+    assert "<b>" not in f.evidence and "<p>" not in f.evidence
+    assert "The id parameter appears to be vulnerable" in f.evidence
+
+
+def test_burp_host_dict_from_xml_converters_is_unwrapped():
+    """`<host ip=...>value</host>` survives conversion as a dict; str() on it
+    would put a Python repr in the URL."""
+    f = parse_burp(BURP_PRO)[0]
+    assert "#text" not in f.url and "{" not in f.url
+
+
+@pytest.mark.parametrize("detail,expected", [
+    ("The <b>id</b> parameter appears to be vulnerable", "id"),
+    ("The q parameter is copied into the response", "q"),
+    ("The X-Forwarded-For header is used", "X-Forwarded-For"),
+    ("<p>The <b>record_id</b> URL parameter is used</p>", "record_id"),
+])
+def test_burp_parameter_read_from_burps_own_phrasing(detail, expected):
+    """Not a guess: the string comes from the scan file, so the parameter stays
+    traceable to scanner output."""
+    f = parse_burp({"issues": [{"name": "x", "host": "https://h.example",
+                                "path": "/p", "issueDetail": detail}]})[0]
+    assert f.parameter == expected
+
+
+def test_burp_parameter_is_empty_when_it_cannot_be_read():
+    """A miss must leave the field empty rather than invent a name."""
+    f = parse_burp({"issues": [{"name": "x", "host": "https://h.example", "path": "/p",
+                                "issueDetail": "Something entirely unrelated."}]})[0]
+    assert f.parameter == ""
+
+
+def test_burp_findings_run_through_the_whole_pipeline():
+    result = TriageAgent(backend=MockBackend()).run(parse_burp(BURP_PRO))
+    triaged = result.findings[0]
+    assert triaged.cwe_id == "CWE-89"
+    assert triaged.cvss_score == 9.8
+    assert triaged.severity == "Critical"
